@@ -1,0 +1,55 @@
+{
+  "newapi_url": {
+    "description": "New-API 地址",
+    "type": "string",
+    "default": "",
+    "hint": "例如 https://api.example.com，不带末尾斜杠"
+  },
+  "newapi_token": {
+    "description": "系统访问令牌",
+    "type": "string",
+    "default": "",
+    "hint": "个人设置 → 安全设置 → 系统访问令牌（需管理员账号生成）"
+  },
+  "newapi_user_id": {
+    "description": "管理员用户 ID",
+    "type": "string",
+    "default": "",
+    "hint": "New-API 后台用户管理中查看，通常为 1（root 用户）"
+  },
+  "group_ids": {
+    "description": "发送群号（多群逗号分隔）",
+    "type": "string",
+    "default": "",
+    "hint": "定时报表发送的目标 QQ 群号，多个群用英文逗号分隔，如 123456,789012"
+  },
+  "cron_minute": {
+    "description": "定时执行分钟",
+    "type": "int",
+    "default": 5,
+    "hint": "每小时第几分钟执行（0-59），默认第 5 分钟"
+  },
+  "enable_cron": {
+    "description": "启用定时报表",
+    "type": "bool",
+    "default": true
+  },
+  "time_range_hours": {
+    "description": "报表时间范围（小时）",
+    "type": "int",
+    "default": 9,
+    "hint": "柱状图和排行统计的时间范围，1-48 小时，默认 9"
+  },
+  "browser_executable": {
+    "description": "Chromium 可执行文件路径",
+    "type": "string",
+    "default": "",
+    "hint": "留空则自动下载，Docker 环境可填 /usr/bin/chromium 或具体路径"
+  },
+  "background_url": {
+    "description": "报表背景图 URL",
+    "type": "string",
+    "default": "",
+    "hint": "可选，填入图片 URL 将作为报表背景，首次下载后缓存本地"
+  }
+}
