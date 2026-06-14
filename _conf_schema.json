@@ -1,55 +1,294 @@
 {
+  "connection": {
+    "description": "New-API 连接",
+    "type": "object",
+    "hint": "访问 New-API 管理接口所需的连接信息",
+    "items": {
+      "newapi_url": {
+        "description": "New-API 地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 https://api.example.com，不带末尾斜杠"
+      },
+      "newapi_token": {
+        "description": "系统访问令牌",
+        "type": "string",
+        "default": "",
+        "hint": "管理员账号生成的系统访问令牌",
+        "obvious_hint": true
+      },
+      "newapi_user_id": {
+        "description": "管理员用户 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必须与系统访问令牌所属管理员一致"
+      }
+    }
+  },
+  "delivery": {
+    "description": "定时发送",
+    "type": "object",
+    "hint": "报表自动发送目标与时间",
+    "items": {
+      "group_ids": {
+        "description": "发送群号",
+        "type": "string",
+        "default": "",
+        "hint": "支持多个 QQ 群，使用英文逗号分隔"
+      },
+      "enable_cron": {
+        "description": "启用定时报表",
+        "type": "bool",
+        "default": true
+      },
+      "cron_minute": {
+        "description": "每小时执行分钟",
+        "type": "int",
+        "default": 5,
+        "minimum": 0,
+        "maximum": 59,
+        "hint": "每小时第几分钟生成并发送报表"
+      }
+    }
+  },
+  "report": {
+    "description": "报表显示",
+    "type": "object",
+    "hint": "控制统计时间范围和报表内容",
+    "items": {
+      "time_range_hours": {
+        "description": "统计时间范围（小时）",
+        "type": "int",
+        "default": 24,
+        "minimum": 1,
+        "maximum": 48,
+        "hint": "默认统计近 24 小时"
+      },
+      "show_ip_addresses": {
+        "description": "显示 IP 地址",
+        "type": "bool",
+        "default": true,
+        "hint": "总开关，默认开启；关闭后隐藏所有 IP，生成的 HTML 中也不写入 IP"
+      },
+      "show_ipv4_addresses": {
+        "description": "显示 IPv4",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启；关闭后不显示且不向报表 HTML 写入 IPv4"
+      },
+      "show_ipv6_addresses": {
+        "description": "显示 IPv6",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启；关闭后不显示且不向报表 HTML 写入 IPv6"
+      }
+    }
+  },
+  "background": {
+    "description": "背景",
+    "type": "object",
+    "hint": "底图来源、回退、预加载与长图适配方式",
+    "items": {
+      "bg_provider": {
+        "description": "背景获取来源（主）",
+        "type": "string",
+        "default": "loli",
+        "options": ["loli", "lolicon", "loli&lolicon", "local", "none"],
+        "hint": "支持：loliapi/lolicon（Pixiv）/loli&lolicon（两者随机）/local（本地路径或目录）/none（使用渐变背景）。"
+      },
+      "bg_fallback_chain": {
+        "description": "背景回退链",
+        "type": "string",
+        "default": "loli&lolicon,local",
+        "hint": "逗号分隔的回退顺序；会在主来源失败后依次尝试，完全失败时复用上次底图或使用渐变背景。"
+      },
+      "bg_local_path": {
+        "description": "本地背景路径（文件或目录）",
+        "type": "string",
+        "default": "",
+        "hint": "可填写绝对或相对路径；目录会随机抽取其中的图片文件。"
+      },
+      "bg_preload_count": {
+        "description": "预加载背景数量",
+        "type": "int",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 10,
+        "hint": "后台预取的背景张数，生成报表时可直接使用。"
+      },
+      "bg_req_timeout": {
+        "description": "背景请求超时（秒）",
+        "type": "int",
+        "default": 10,
+        "minimum": 5,
+        "maximum": 60,
+        "hint": "在线背景请求超时时间。"
+      },
+      "bg_proxy": {
+        "description": "背景请求代理",
+        "type": "string",
+        "default": "",
+        "hint": "获取在线背景时使用的 HTTP/HTTPS 代理地址，留空不使用代理。"
+      },
+      "bg_lolicon_r18_type": {
+        "description": "Lolicon 背景 R18 类型",
+        "type": "int",
+        "default": 0,
+        "options": [0, 1, 2],
+        "hint": "0=正常，1=R18，2=混合；仅在使用 lolicon 提供方时生效。"
+      },
+      "bg_fit_mode": {
+        "description": "长图适配方式",
+        "type": "string",
+        "default": "repeat",
+        "options": ["repeat", "cover", "contain"],
+        "hint": "repeat=宽度适配并镜像交替平铺（推荐，适合超长图）；cover=单图铺满；contain=完整显示单图"
+      },
+      "bg_position": {
+        "description": "单图对齐位置",
+        "type": "string",
+        "default": "top",
+        "options": ["top", "center", "bottom"],
+        "hint": "仅 cover/contain 模式生效"
+      },
+      "bg_custom_url": {
+        "type": "string",
+        "default": "https://www.loliapi.com/acg/pc/",
+        "invisible": true
+      }
+    }
+  },
+  "advanced": {
+    "description": "高级设置",
+    "type": "object",
+    "items": {
+      "browser_executable": {
+        "description": "浏览器可执行文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "通常留空，使用 Playwright Chromium"
+      },
+      "config_version": {
+        "description": "配置迁移版本",
+        "type": "int",
+        "default": 2,
+        "invisible": true
+      }
+    }
+  },
   "newapi_url": {
-    "description": "New-API 地址",
     "type": "string",
     "default": "",
-    "hint": "例如 https://api.example.com，不带末尾斜杠"
+    "invisible": true
   },
   "newapi_token": {
-    "description": "系统访问令牌",
     "type": "string",
     "default": "",
-    "hint": "个人设置 → 安全设置 → 系统访问令牌（需管理员账号生成）"
+    "invisible": true
   },
   "newapi_user_id": {
-    "description": "管理员用户 ID",
     "type": "string",
     "default": "",
-    "hint": "New-API 后台用户管理中查看，通常为 1（root 用户）"
+    "invisible": true
   },
   "group_ids": {
-    "description": "发送群号（多群逗号分隔）",
     "type": "string",
     "default": "",
-    "hint": "定时报表发送的目标 QQ 群号，多个群用英文逗号分隔，如 123456,789012"
+    "invisible": true
   },
-  "cron_minute": {
-    "description": "定时执行分钟",
-    "type": "int",
-    "default": 5,
-    "hint": "每小时第几分钟执行（0-59），默认第 5 分钟"
-  },
-  "enable_cron": {
-    "description": "启用定时报表",
-    "type": "bool",
-    "default": true
+  "group_id": {
+    "type": "string",
+    "default": "",
+    "invisible": true
   },
   "time_range_hours": {
-    "description": "报表时间范围（小时）",
     "type": "int",
-    "default": 9,
-    "hint": "柱状图和排行统计的时间范围，1-48 小时，默认 9"
+    "default": 24,
+    "invisible": true
+  },
+  "show_ip_addresses": {
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "show_ipv4_addresses": {
+    "type": "bool",
+    "default": true,
+    "invisible": true
+  },
+  "show_ipv6_addresses": {
+    "type": "bool",
+    "default": true,
+    "invisible": true
   },
   "browser_executable": {
-    "description": "Chromium 可执行文件路径",
     "type": "string",
     "default": "",
-    "hint": "留空则自动下载，Docker 环境可填 /usr/bin/chromium 或具体路径"
+    "invisible": true
   },
   "background_url": {
-    "description": "报表背景图 URL",
+    "type": "string",
+    "default": "https://www.loliapi.com/acg/pc/",
+    "invisible": true
+  },
+  "background_provider": {
+    "type": "string",
+    "default": "loli",
+    "invisible": true
+  },
+  "background_fallback_chain": {
+    "type": "string",
+    "default": "loli",
+    "invisible": true
+  },
+  "background_local_path": {
     "type": "string",
     "default": "",
-    "hint": "可选，填入图片 URL 将作为报表背景，首次下载后缓存本地"
+    "invisible": true
+  },
+  "background_request_timeout": {
+    "type": "int",
+    "default": 10,
+    "invisible": true
+  },
+  "background_preload_count": {
+    "type": "int",
+    "default": 1,
+    "invisible": true
+  },
+  "background_proxy": {
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "bg_preload_count": {
+    "type": "int",
+    "default": 1,
+    "invisible": true
+  },
+  "bg_proxy": {
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "background_lolicon_r18_type": {
+    "type": "int",
+    "default": 0,
+    "invisible": true
+  },
+  "bg_lolicon_r18_type": {
+    "type": "int",
+    "default": 0,
+    "invisible": true
+  },
+  "cron_minute": {
+    "type": "int",
+    "default": 5,
+    "invisible": true
+  },
+  "enable_cron": {
+    "type": "bool",
+    "default": true,
+    "invisible": true
   }
 }
