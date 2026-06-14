@@ -10,10 +10,10 @@ from pathlib import Path
 
 import aiohttp
 import psutil
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.all import Star, Context, AstrBotConfig, logger
-from astrbot.api.star import StarTools
 
+from astrbot.api.all import AstrBotConfig, Context, Star, logger
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.star import StarTools
 
 DEFAULT_BACKGROUND_URL = "https://www.loliapi.com/acg/pc/"
 LOLICON_API_URL = "https://api.lolicon.app/setu/v2"
@@ -34,6 +34,11 @@ def to_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def normalize_timestamp(value):
+    timestamp = to_int(value)
+    return timestamp // 1000 if timestamp > 1_000_000_000_000 else timestamp
 
 
 def json_for_script(value):
@@ -60,7 +65,9 @@ class NewApiHourlyReport(Star):
         self._bg_cache_path = None
         self._background_queue = asyncio.Queue()
         self._background_preload_task = None
+        self._background_cache_lock = asyncio.Lock()
         self._cache_lock = asyncio.Lock()
+        self._sync_lock = asyncio.Lock()
         self._data_dir = StarTools.get_data_dir()
 
     def _cfg(self, section: str, key: str, default=None, legacy_keys=()):
@@ -393,18 +400,23 @@ class NewApiHourlyReport(Star):
         temp_file = data_dir / "log_cache.tmp"
         now_ts = int(time.time())
 
-        async with self._cache_lock:
-            # 读取现有缓存
+        async with self._sync_lock:
             cached_logs = []
             cache_end_ts = 0
             if cache_file.exists():
                 try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        cache_data = json.load(f)
+                    async with self._cache_lock:
+                        cache_data = await asyncio.to_thread(
+                            self._read_cache_file, cache_file
+                        )
                     cached_logs = cache_data.get("logs", [])
-                    cache_end_ts = cache_data.get("end_ts", 0)
-                except Exception:
-                    cached_logs = []
+                    cache_end_ts = to_int(cache_data.get("end_ts"))
+                    if not isinstance(cached_logs, list):
+                        raise ValueError("logs 不是数组")
+                except Exception as e:
+                    raise RuntimeError(
+                        f"读取现有缓存失败，为避免覆盖历史数据已停止同步: {e}"
+                    ) from e
 
             if full or cache_end_ts == 0:
                 # 全量：拉最近48小时（按30分钟段采样）
@@ -418,47 +430,51 @@ class NewApiHourlyReport(Star):
 
             new_logs = await self._fetch_logs_from_api(fetch_start, now_ts)
 
-            # 合并、去重、只保留48小时
-            all_logs = cached_logs + new_logs
             cutoff = now_ts - 48 * 3600
+            # fetch_start 之后由本轮完整结果整体替换，既覆盖迟到日志，
+            # 又不会把没有请求 ID 的真实重复请求误判为同一条。
+            all_logs = []
+            for log in cached_logs:
+                if not isinstance(log, dict):
+                    continue
+                created_at = normalize_timestamp(log.get("created_at"))
+                if created_at < fetch_start:
+                    log = dict(log)
+                    log["created_at"] = created_at
+                    all_logs.append(log)
+            all_logs.extend(new_logs)
             normalized_logs = []
+            seen_ids = set()
             for log in all_logs:
                 if not isinstance(log, dict):
                     continue
-                created_at = to_int(log.get("created_at"))
-                if created_at > 1_000_000_000_000:
-                    created_at //= 1000
-                    log["created_at"] = created_at
+                log = dict(log)
+                created_at = normalize_timestamp(log.get("created_at"))
+                log["created_at"] = created_at
                 if created_at >= cutoff and to_int(log.get("type"), 2) == 2:
+                    request_id = log.get("id") or log.get("request_id")
+                    if request_id:
+                        request_key = str(request_id)
+                        if request_key in seen_ids:
+                            continue
+                        seen_ids.add(request_key)
                     normalized_logs.append(log)
-            seen = set()
-            deduped = []
-            for log in normalized_logs:
-                key = log.get("id") or log.get("request_id") or (
-                    log.get("created_at", 0),
-                    log.get("model_name", ""),
-                    log.get("ip", ""),
-                    log.get("username", ""),
-                    log.get("prompt_tokens", 0),
-                    log.get("completion_tokens", 0),
-                )
-                if key not in seen:
-                    seen.add(key)
-                    deduped.append(log)
 
             try:
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump({"logs": deduped, "end_ts": now_ts}, f, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_file, cache_file)
+                async with self._cache_lock:
+                    await asyncio.to_thread(
+                        self._write_cache_file,
+                        temp_file,
+                        cache_file,
+                        {"logs": normalized_logs, "end_ts": now_ts},
+                    )
                 if full:
-                    logger.info(f"全量同步完成: {len(deduped)} 条")
+                    logger.info(f"全量同步完成: {len(normalized_logs)} 条")
                 else:
                     logger.info(
                         f"完整增量同步: 区间 {time.strftime('%H:%M:%S', time.localtime(fetch_start))}"
                         f"~{time.strftime('%H:%M:%S', time.localtime(now_ts))}, "
-                        f"拉取 {len(new_logs)} 条, 缓存共 {len(deduped)} 条"
+                        f"拉取 {len(new_logs)} 条, 缓存共 {len(normalized_logs)} 条"
                     )
             except Exception as e:
                 try:
@@ -665,6 +681,10 @@ class NewApiHourlyReport(Star):
         return content
 
     async def _cache_background(self, force_refresh: bool = False):
+        async with self._background_cache_lock:
+            await self._cache_background_unlocked(force_refresh)
+
+    async def _cache_background_unlocked(self, force_refresh: bool = False):
         """下载随机背景图；刷新失败时继续使用上一次缓存。"""
         data_dir = self._data_dir
         cache_path = data_dir / "bg_cache.jpg"
@@ -742,8 +762,16 @@ class NewApiHourlyReport(Star):
 
     @staticmethod
     def _read_cache_file(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
+
+    @staticmethod
+    def _write_cache_file(temp_path, cache_path, data):
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, cache_path)
 
     async def _api_request(self, session, url, params, headers, max_retries=5):
         """带重试的 API 请求，支持 429 限流退避"""
@@ -757,20 +785,41 @@ class NewApiHourlyReport(Star):
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status == 429:
-                        wait = 10 * attempt
+                        retry_after = to_int(resp.headers.get("Retry-After"), 0)
+                        wait = min(300, max(retry_after, 10 * attempt))
                         last_err = RuntimeError(f"API 持续限流 429，已重试 {attempt} 次")
-                        logger.warning(f"API 限流 429，等待 {wait}s 后重试 ({attempt}/{max_retries})")
-                        await asyncio.sleep(wait)
+                        if attempt < max_retries:
+                            logger.warning(
+                                f"API 限流 429，等待 {wait}s 后重试 "
+                                f"({attempt}/{max_retries})"
+                            )
+                            await asyncio.sleep(wait)
                         continue
-                    data = await resp.json()
+                    if resp.status >= 500:
+                        detail = (await resp.text())[:200]
+                        last_err = RuntimeError(
+                            f"New-API HTTP {resp.status}: {detail or 'server error'}"
+                        )
+                        if attempt < max_retries:
+                            await asyncio.sleep(2 * attempt)
+                        continue
+                    if resp.status >= 400:
+                        detail = (await resp.text())[:200]
+                        raise RuntimeError(
+                            f"New-API HTTP {resp.status}: {detail or 'request failed'}"
+                        )
+                    data = await resp.json(content_type=None)
                 if not data.get("success"):
                     err_msg = data.get("message", "unknown")
-                    raise Exception(f"New-API 请求失败: {err_msg}")
+                    raise RuntimeError(f"New-API 请求失败: {err_msg}")
                 return data
-            except aiohttp.client_exceptions.ContentTypeError as e:
-                # 429 等非 JSON 响应
+            except ValueError as e:
                 wait = 10 * attempt
-                logger.warning(f"API 响应异常 (可能是限流)，等待 {wait}s 后重试 ({attempt}/{max_retries}): {e}")
+                last_err = e
+                logger.warning(
+                    f"API JSON 响应异常，等待 {wait}s 后重试 "
+                    f"({attempt}/{max_retries}): {e}"
+                )
                 if attempt < max_retries:
                     await asyncio.sleep(wait)
                     continue
@@ -806,7 +855,8 @@ class NewApiHourlyReport(Star):
         result = [
             log
             for log in cached_logs
-            if start_ts <= to_int(log.get("created_at")) < end_ts
+            if isinstance(log, dict)
+            and start_ts <= normalize_timestamp(log.get("created_at")) < end_ts
         ]
         logger.info(f"日志获取完成: {len(result)} 条 (时间范围 {time.strftime('%m-%d %H:%M', time.localtime(start_ts))} ~ {time.strftime('%m-%d %H:%M', time.localtime(end_ts))})")
         return result
@@ -833,9 +883,10 @@ class NewApiHourlyReport(Star):
                 page = 1
                 chunk_fetched = 0
                 chunk_total = None
+                seen_page_signatures = set()
                 while True:
                     params = {
-                        "page": page,
+                        "p": page,
                         "page_size": per_page,
                         "type": 2,
                         "start_timestamp": chunk_start,
@@ -857,8 +908,23 @@ class NewApiHourlyReport(Star):
                                 "返回数据缺少 items"
                             )
                         logs = resp_data.get("items", [])
-                        if chunk_total is None:
-                            chunk_total = to_int(resp_data.get("total"), 0)
+                        if (
+                            chunk_total is None
+                            and "total" in resp_data
+                            and resp_data["total"] is not None
+                        ):
+                            try:
+                                chunk_total = int(resp_data["total"])
+                            except (TypeError, ValueError) as e:
+                                raise RuntimeError(
+                                    f"段 {chunk_idx+1}/{len(chunks)} page={page} "
+                                    "返回的 total 格式异常"
+                                ) from e
+                            if chunk_total < 0:
+                                raise RuntimeError(
+                                    f"段 {chunk_idx+1}/{len(chunks)} page={page} "
+                                    "返回的 total 小于 0"
+                                )
                     else:
                         logs = resp_data if isinstance(resp_data, list) else []
                         chunk_total = None
@@ -866,12 +932,42 @@ class NewApiHourlyReport(Star):
                         raise RuntimeError(
                             f"段 {chunk_idx+1}/{len(chunks)} page={page} 返回格式异常"
                         )
-                    all_logs.extend(logs)
+                    page_signature = tuple(
+                        log.get("id")
+                        or log.get("request_id")
+                        or json.dumps(
+                            log,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                        if isinstance(log, dict)
+                        else repr(log)
+                        for log in logs
+                    )
+                    if logs and page_signature in seen_page_signatures:
+                        raise RuntimeError(
+                            f"段 {chunk_idx+1}/{len(chunks)} page={page} "
+                            "返回了重复分页，停止拉取以避免死循环"
+                        )
+                    seen_page_signatures.add(page_signature)
+                    all_logs.extend(
+                        log
+                        for log in logs
+                        if isinstance(log, dict)
+                        and chunk_start
+                        <= normalize_timestamp(log.get("created_at"))
+                        < chunk_end
+                    )
                     chunk_fetched += len(logs)
                     # 该段拉完：不足一页 或 已达到该段 total
                     if len(logs) < per_page or (chunk_total is not None and chunk_fetched >= chunk_total):
                         break
                     page += 1
+                    if page > 10_000:
+                        raise RuntimeError(
+                            f"段 {chunk_idx+1}/{len(chunks)} 分页超过安全上限"
+                        )
                     await asyncio.sleep(0.2)
                 if chunk_total is not None and chunk_fetched < chunk_total:
                     raise RuntimeError(
@@ -916,8 +1012,8 @@ class NewApiHourlyReport(Star):
 
     @staticmethod
     def _process_data(logs, start_ts, end_ts, time_range_hours=24):
-        # 30分钟一档，从 end_ts 往前对齐到30分钟边界
-        slot_end = (int(end_ts // 1800) + 1) * 1800
+        # 严格使用调用方传入的滚动窗口结束时间，每档固定 30 分钟。
+        slot_end = to_int(end_ts)
         num_slots = time_range_hours * 2
         range_start = slot_end - num_slots * 1800
         slots = [0] * num_slots
@@ -933,18 +1029,16 @@ class NewApiHourlyReport(Star):
         for log in logs:
             if not isinstance(log, dict) or to_int(log.get("type"), 2) != 2:
                 continue
-            created_at = log.get("created_at", 0)
-            if created_at > 1_000_000_000_000:
-                created_at //= 1000
+            created_at = normalize_timestamp(log.get("created_at"))
             if created_at < range_start or created_at >= slot_end:
                 continue
             # 计算落在哪个slot
             slot_idx = int((created_at - range_start) // 1800)
             if 0 <= slot_idx < num_slots:
                 slots[slot_idx] += 1
-            model = log.get("model_name", "unknown")
-            prompt_tok = int(log.get("prompt_tokens", 0) or 0)
-            comp_tok = int(log.get("completion_tokens", 0) or 0)
+            model = str(log.get("model_name") or "unknown").strip() or "unknown"
+            prompt_tok = max(0, to_int(log.get("prompt_tokens")))
+            comp_tok = max(0, to_int(log.get("completion_tokens")))
             total_tok = prompt_tok + comp_tok
             total_tok_all += total_tok
             if model not in model_stats:
@@ -1492,8 +1586,8 @@ document.getElementById('focus').innerHTML=focusItems.map(item=>
             await self._cache_background(force_refresh=True)
         report_background_path = await self._prepare_report_background()
         end_ts, _ = self._get_hour()
-        # 从 end_ts 往前推 time_range_hours 小时，对齐到30分钟边界
-        slot_end = (int(end_ts // 1800) + 1) * 1800
+        # 按当前分钟结束，统计严格的滚动时间窗口，标题不会指向未来。
+        slot_end = (to_int(end_ts) // 60) * 60
         start_ts_range = slot_end - self.time_range_hours * 3600
         hour_label = (
             time.strftime("%m/%d %H:%M", time.localtime(start_ts_range))
@@ -1504,7 +1598,7 @@ document.getElementById('focus').innerHTML=focusItems.map(item=>
         logs = await self._fetch_logs(start_ts_range, slot_end)
         logger.info(f"获取到 {len(logs)} 条日志（时间范围 {self.time_range_hours} 小时）")
         if logs:
-            ca = logs[0].get('created_at', 0)
+            ca = logs[0].get("created_at", 0)
             if ca > 1e12:
                 logger.warning("created_at 是毫秒级，需要转换！")
         slots, slot_labels, models_sorted, users_sorted, total_tok = self._process_data(
