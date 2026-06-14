@@ -1,7 +1,7 @@
 name: astrbot_plugin_newapi_report
 display_name: New-API 每小时报表
 desc: 每小时自动生成 New-API 监控报表，含分钟请求图、模型/IP Token 排行、服务器状态，发送到 QQ 群
-version: v1.3.0
+version: v1.4.4
 author: user
 repo: "https://github.com/2164312714-svg/astrbot_plugin_newapi_report"
 support_platforms:
